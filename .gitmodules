@@ -1,0 +1,12 @@
+[submodule "full-node"]
+	path = full-node
+	url = git@github.com:Project-Magma-Monorepo/sui-full-node-docker.git
+[submodule "supabase"]
+	path = supabase
+	url = git@github.com:Project-Magma-Monorepo/supabase.git
+[submodule "sui-sender-indexer"]
+	path = sui-sender-indexer
+	url = git@github.com:Project-Magma-Monorepo/sui-sender-indexer.git
+[submodule "lava"]
+	path = lava
+	url = git@github.com:Project-Magma-Monorepo/lava.git
