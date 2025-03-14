@@ -1,0 +1,11 @@
+
+include:
+  - path: ./full-node/docker-compose.yml
+  - path: ./lava/docker/new-node/docker-compose.yml
+  - path: ./sui-sender-indexer/docker-compose.yml
+  - path: ./supabase/docker/docker-compose.yml
+
+
+networks:
+  internal-network:
+    external: true
