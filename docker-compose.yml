@@ -1,11 +1,29 @@
+# MasterProject/docker-compose.yml
+name: master-project
 
 include:
-  - path: ./full-node/docker-compose.yml
-  - path: ./lava/docker/new-node/docker-compose.yml
+  # - path: ./lava/docker/state-sync/docker-compose.yml
+  #   project_directory: ./lava/docker/state-sync
+  #   name: lava
+  #   # Override volumes for lava-node service
+  #   services:
+  #     lava-node:
+  #       volumes:
+  #         - lava_data:/lava  # Keep original volume
+  #         - ${PWD}/lava/config.yml:/lava/.lava/config/config.yml  # Mount config file from project root
+          
   - path: ./sui-sender-indexer/docker-compose.yml
+    project_directory: ./sui-sender-indexer
+    name: sui
+    # Add dependency for the SUI indexer service
+    services:
+      # Assuming your main indexer service is named "indexer"
+      # Replace with actual service name if different
+      sui-sender-indexer:
+        depends_on:
+          supabase-db:
+            condition: service_healthy
+            
   - path: ./supabase/docker/docker-compose.yml
-
-
-networks:
-  internal-network:
-    external: true
+    project_directory: ./supabase/docker
+    name: supabase
