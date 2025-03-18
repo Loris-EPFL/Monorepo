@@ -1,4 +1,4 @@
-# Blockchain Data Indexing Platform
+# Project Magma: Blockchain Data Indexing Platform
 
 A comprehensive platform that combines Lava Network, SUI blockchain indexing, SUI Full Node, Lava Provider, and Supabase database services in a unified Docker Compose setup.
 
