@@ -17,12 +17,16 @@ include:
     name: sui
     # Add dependency for the SUI indexer service
     services:
-      # Assuming your main indexer service is named "indexer"
-      # Replace with actual service name if different
       sui-sender-indexer:
         depends_on:
           supabase-db:
             condition: service_healthy
+        # healthcheck:
+        #   test: ["CMD", "pg_isready", "-h", "supabase-db", "-U", "supabase_admin"]
+        #   interval: 5s
+        #   timeout: 5s
+        #   retries: 20
+        #   start_period: 10s
             
   - path: ./supabase/docker/docker-compose.yml
     project_directory: ./supabase/docker
