@@ -1,0 +1,77 @@
+{
+    "family": "sui-indexer-alt",
+    "executionRoleArn": "${ECSTaskExecutionRoleARN}",
+    "taskRoleArn": "${ECSTaskRoleARN}",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "2048",
+    "memory": "4096",
+    "containerDefinitions": [
+      {
+        "name": "sui-indexer-alt",
+        "image": "mysten/sui-indexer-alt:testnet",
+        "essential": true,
+        "environment": [
+          {
+            "name": "RUST_LOG",
+            "value": "info"
+          },
+          {
+            "name": "DB_HOST",
+            "value": "${DBHostname}"
+          },
+          {
+            "name": "DB_PORT",
+            "value": "5432"
+          },
+          {
+            "name": "DB_USER",
+            "value": "${DBUsername}"
+          },
+          {
+            "name": "DB_NAME",
+            "value": "sui_indexer"
+          },
+          {
+            "name": "RPC_URL",
+            "value": "http://sui-fullnode.${ServiceDiscoveryNamespace}:9000"
+          },
+          {
+            "name": "POSTGRES_URL",
+            "value": "postgres://${DBUsername}:${DBPassword}@${DBHostname}:5432/sui_indexer"
+          }
+        ],
+        "secrets": [
+          {
+            "name": "DB_PASSWORD",
+            "valueFrom": "${DBPasswordSecretArn}"
+          }
+        ],
+        "logConfiguration": {
+          "logDriver": "awslogs",
+          "options": {
+            "awslogs-group": "/ecs/sui-indexer",
+            "awslogs-region": "${AWS_REGION}",
+            "awslogs-stream-prefix": "sui-indexer"
+          }
+        },
+        "healthCheck": {
+          "command": [
+            "CMD-SHELL",
+            "curl -f http://localhost:9184/metrics || exit 1"
+          ],
+          "interval": 30,
+          "timeout": 5,
+          "retries": 3,
+          "startPeriod": 60
+        },
+        "portMappings": [
+          {
+            "containerPort": 9184,
+            "hostPort": 9184,
+            "protocol": "tcp"
+          }
+        ]
+      }
+    ]
+  }

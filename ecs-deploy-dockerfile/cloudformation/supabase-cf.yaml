@@ -1,0 +1,179 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Supabase on AWS ECS'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The VPC where resources will be deployed
+  
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnet IDs where the ECS tasks can run
+  
+  PostgresPassword:
+    Type: String
+    Description: Master password for PostgreSQL
+    NoEcho: true
+  
+  JwtSecret:
+    Type: String
+    Description: Secret for JWT tokens
+    NoEcho: true
+
+  JwtExpiry:
+    Type: String
+    Description: JWT expiry in seconds
+    Default: "3600"
+  
+  SiteUrl:
+    Type: String
+    Description: Public URL for the site
+    Default: "http://localhost:3000"
+  
+  AnonKey:
+    Type: String
+    Description: Anon key for Supabase
+    Default: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    NoEcho: true
+  
+  ServiceRoleKey:
+    Type: String
+    Description: Service role key for Supabase
+    Default: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    NoEcho: true
+  
+  DashboardUsername:
+    Type: String
+    Description: Username for Supabase dashboard
+    Default: "supabase"
+  
+  DashboardPassword:
+    Type: String
+    Description: Password for Supabase dashboard
+    NoEcho: true
+    
+  KeyPair:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Key pair for EC2 instances
+    
+  EnableEmailSignup:
+    Type: String
+    Description: Enable email signup
+    Default: "true"
+    
+  EnableAnonymousUsers:
+    Type: String
+    Description: Enable anonymous users
+    Default: "true"
+    
+  EnableEmailAutoconfirm:
+    Type: String
+    Description: Enable email auto-confirmation
+    Default: "true"
+    
+  TenantId:
+    Type: String
+    Description: Tenant ID for Supavisor
+    Default: "default-tenant"
+
+  InstanceType:
+    Type: String
+    Description: Instance type for the database host
+    Default: "t3.xlarge"
+    AllowedValues:
+      - t3.large
+      - t3.xlarge
+      - m5.large
+      - m5.xlarge
+      - r5.large
+      - r5.xlarge
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-0fe77b349d804e9e6
+    us-east-2:
+      AMI: ami-05803413c51f242b7
+    us-west-1:
+      AMI: ami-0a1a9741b091af0f8
+    us-west-2:
+      AMI: ami-095413544ce52f4d0
+    eu-west-1:
+      AMI: ami-0e1ab783dc9489f34
+
+Resources:
+  # ECS Cluster
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: SupabaseCluster
+      CapacityProviders:
+        - FARGATE
+        - !Ref DBCapacityProvider
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+          Base: 1
+  
+  # ECS Capacity Provider for Database EC2 Instances
+  DBCapacityProvider:
+    Type: AWS::ECS::CapacityProvider
+    Properties:
+      AutoScalingGroupProvider:
+        AutoScalingGroupArn: !Ref DBAutoScalingGroup
+        ManagedScaling:
+          Status: ENABLED
+          TargetCapacity: 100
+        ManagedTerminationProtection: ENABLED
+  
+  # Auto Scaling Group for Database
+  DBAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Ref SubnetIds
+      LaunchTemplate:
+        LaunchTemplateId: !Ref DBLaunchTemplate
+        Version: !GetAtt DBLaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 1
+      DesiredCapacity: 1
+      Tags:
+        - Key: Name
+          Value: SupabaseDatabaseInstance
+          PropagateAtLaunch: true
+  
+  # Launch Template for Database EC2 Instances
+  DBLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: SupabaseDatabaseLaunchTemplate
+      VersionDescription: Initial version
+      LaunchTemplateData:
+        InstanceType: !Ref InstanceType
+        ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+        KeyName: !Ref KeyPair
+        SecurityGroupIds:
+          - !Ref ECSSecurityGroup
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 100
+              VolumeType: gp3
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            echo ECS_CLUSTER=${Cluster} >> /etc/ecs/ecs.config
+            echo ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config
+            yum install -y amazon-efs-utils
+            mkdir -p /mnt/efs
+            mount -t efs -o tls ${FileSystem}.efs.${AWS::Region}.amazonaws.com:/ /mnt/efs
+  
+  # EFS for Persistent Storage
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      FileSystemTags:
+        - Key: Name

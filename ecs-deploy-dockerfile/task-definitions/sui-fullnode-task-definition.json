@@ -1,0 +1,75 @@
+{
+    "family": "sui-fullnode",
+    "networkMode": "awsvpc",
+    "executionRoleArn": "${ECSTaskExecutionRoleARN}",
+    "taskRoleArn": "${ECSTaskRoleARN}",
+    "containerDefinitions": [
+      {
+        "name": "sui-fullnode",
+        "image": "mysten/sui-node:testnet",
+        "essential": true,
+        "portMappings": [
+          { "containerPort": 8080, "hostPort": 8080 },
+          { "containerPort": 8084, "hostPort": 8084, "protocol": "udp" },
+          { "containerPort": 9000, "hostPort": 9000 },
+          { "containerPort": 9184, "hostPort": 9184 }
+        ],
+        "mountPoints": [
+          {
+            "sourceVolume": "sui-config",
+            "containerPath": "/opt/sui/config",
+            "readOnly": true
+          },
+          {
+            "sourceVolume": "sui-data",
+            "containerPath": "/opt/sui/db",
+            "readOnly": false
+          }
+        ],
+        "logConfiguration": {
+          "logDriver": "awslogs",
+          "options": {
+            "awslogs-group": "/ecs/sui-fullnode",
+            "awslogs-region": "${AWS_REGION}",
+            "awslogs-stream-prefix": "sui-fullnode"
+          }
+        },
+        "command": [
+          "/opt/sui/bin/sui-node",
+          "--config-path",
+          "/opt/sui/config/fullnode.yaml"
+        ],
+        "healthCheck": {
+          "command": ["CMD-SHELL", "curl -f http://localhost:9184/health || exit 1"],
+          "interval": 30,
+          "timeout": 5,
+          "retries": 3,
+          "startPeriod": 60
+        }
+      }
+    ],
+    "volumes": [
+      {
+        "name": "sui-config",
+        "efsVolumeConfiguration": {
+          "fileSystemId": "${EFSFileSystemId}",
+          "rootDirectory": "/config",
+          "transitEncryption": "ENABLED"
+        }
+      },
+      {
+        "name": "sui-data",
+        "efsVolumeConfiguration": {
+          "fileSystemId": "${EFSFileSystemId}",
+          "rootDirectory": "/data",
+          "transitEncryption": "ENABLED"
+        }
+      }
+    ],
+    "placementConstraints": [
+      {
+        "type": "memberOf",
+        "expression": "attribute:instance-type =~ r6i.*"
+      }
+    ]
+  }

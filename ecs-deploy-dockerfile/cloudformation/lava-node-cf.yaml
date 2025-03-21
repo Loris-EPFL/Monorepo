@@ -1,0 +1,356 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Lava Node on ECS'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The VPC where resources will be deployed
+  
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnet IDs where the ECS tasks can run
+  
+  LavadVersion:
+    Type: String
+    Default: latest
+    Description: Version of the Lavad Docker image
+  
+  LavapVersion:
+    Type: String
+    Default: latest
+    Description: Version of the Lavap Docker image
+  
+  ChainId:
+    Type: String
+    Default: lava-testnet-2
+    Description: Chain ID for the Lava node
+  
+  KeyringBackend:
+    Type: String
+    Default: test
+    Description: Keyring backend for the Lava node
+  
+  Moniker:
+    Type: String
+    Default: ECS_LAVA_NODE
+    Description: Moniker for the Lava node
+  
+  StateSyncRpc1:
+    Type: String
+    Default: https://lava-testnet.rpc.kjnodes.com:443
+    Description: State sync RPC endpoint 1
+  
+  GenesisAddress:
+    Type: String
+    Default: https://snapshots.kjnodes.com/lava-testnet/genesis.json
+    Description: Genesis file URL
+  
+  AddrbookAddress:
+    Type: String
+    Default: https://snapshots.kjnodes.com/lava-testnet/addrbook.json
+    Description: Address book URL
+  
+  NumBlocks:
+    Type: String
+    Default: 1500
+    Description: Number of blocks for state sync
+
+Resources:
+  # EFS File System for Data
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      BackupPolicy:
+        Status: ENABLED
+  
+  # Mount Target for EFS in each Subnet
+  MountTargetResource:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Select [0, !Ref SubnetIds]
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+  
+  # Security Group for EFS
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EFS access
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          CidrIp: 10.0.0.0/16  # Should match your VPC CIDR
+  
+  # Access Point for Data
+  DataAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref FileSystem
+      PosixUser:
+        Uid: 1000
+        Gid: 1000
+      RootDirectory:
+        Path: /lava-data
+        CreationInfo:
+          OwnerUid: 1000
+          OwnerGid: 1000
+          Permissions: 755
+  
+  # Access Point for Config
+  ConfigAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref FileSystem
+      PosixUser:
+        Uid: 1000
+        Gid: 1000
+      RootDirectory:
+        Path: /lava-config
+        CreationInfo:
+          OwnerUid: 1000
+          OwnerGid: 1000
+          Permissions: 755
+  
+  # ECS Cluster
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: LavaNodeCluster
+  
+  # Log Group
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/lava-node
+      RetentionInDays: 30
+  
+  # ECS Role
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+  
+  # Security Group for ECS
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Lava Node on ECS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 1317
+          ToPort: 1317
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 9090
+          ToPort: 9091
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 26656
+          ToPort: 26657
+          CidrIp: 0.0.0.0/0
+  
+  # Task Definition
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: lava-node
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 2048
+      Memory: 4096
+      ContainerDefinitions:
+        - Name: lava-node-init
+          Image: !Sub ghcr.io/lavanet/lava/lavad:${LavadVersion}
+          Essential: false
+          Environment:
+            - Name: CHAIN_ID
+              Value: !Ref ChainId
+            - Name: KEYRING_BACKEND
+              Value: !Ref KeyringBackend
+            - Name: MONIKER
+              Value: !Ref Moniker
+          Command:
+            - sh
+            - -c
+            - "lavad config chain-id $CHAIN_ID && lavad config keyring-backend $KEYRING_BACKEND && lavad init $MONIKER --chain-id $CHAIN_ID"
+          MountPoints:
+            - SourceVolume: lava-data
+              ContainerPath: /lava
+              ReadOnly: false
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: lava-node-init
+        
+        - Name: lava-node-config
+          Image: ghcr.io/tomwright/dasel:v2.7.0
+          Essential: false
+          DependsOn:
+            - ContainerName: lava-node-init
+              Condition: SUCCESS
+          Environment:
+            - Name: STATE_SYNC_RPC_1
+              Value: !Ref StateSyncRpc1
+            - Name: GENESIS_ADDRESS
+              Value: !Ref GenesisAddress
+            - Name: ADDRBOOK_ADDRESS
+              Value: !Ref AddrbookAddress
+            - Name: NUM_BLOCKS
+              Value: !Ref NumBlocks
+          Command:
+            - sh
+            - -c
+            - "apt-get -y update && apt-get install -y jq curl && curl -Ls $GENESIS_ADDRESS > /lava/.lava/config/genesis.json && curl -Ls $ADDRBOOK_ADDRESS > /lava/.lava/config/addrbook.json && dasel put -f /lava/.lava/config/app.toml -t string -v 0ulava 'minimum-gas-prices' && dasel put -f /lava/.lava/config/app.toml -t string -v custom 'pruning' && dasel put -f /lava/.lava/config/app.toml -t string -v 100 'pruning-keep-recent' && dasel put -f /lava/.lava/config/app.toml -t string -v 0 'pruning-keep-every' && dasel put -f /lava/.lava/config/app.toml -t string -v 19 'pruning-interval' && dasel put -f /lava/.lava/config/app.toml -t string -v true 'api.enable' && LATEST_HEIGHT=$(curl -s $STATE_SYNC_RPC_1/block | jq -r .result.block.header.height) && SYNC_BLOCK_HEIGHT=$((LATEST_HEIGHT - $NUM_BLOCKS)) && SYNC_BLOCK_HASH=$(curl -s \"$STATE_SYNC_RPC_1/block?height=$SYNC_BLOCK_HEIGHT\" | jq -r .result.block_id.hash) && dasel put -f /lava/.lava/config/config.toml -t string -v true 'statesync.enable' && dasel put -f /lava/.lava/config/config.toml -t string -v \"$STATE_SYNC_RPC_1,$STATE_SYNC_RPC_1\" 'statesync.rpc_servers' && dasel put -f /lava/.lava/config/config.toml -t string -v \"$SYNC_BLOCK_HEIGHT\" 'statesync.trust_height' && dasel put -f /lava/.lava/config/config.toml -t string -v \"$SYNC_BLOCK_HASH\" 'statesync.trust_hash' && dasel put -f /lava/.lava/config/config.toml -t string -v \"tcp://0.0.0.0:26657\" 'rpc.laddr'"
+          MountPoints:
+            - SourceVolume: lava-data
+              ContainerPath: /lava
+              ReadOnly: false
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: lava-node-config
+        
+        - Name: lava-node
+          Image: !Sub ghcr.io/lavanet/lava/lavad:${LavadVersion}
+          Essential: true
+          DependsOn:
+            - ContainerName: lava-node-config
+              Condition: SUCCESS
+          Command:
+            - start
+          PortMappings:
+            - ContainerPort: 1317
+              HostPort: 1317
+            - ContainerPort: 9090
+              HostPort: 9090
+            - ContainerPort: 9091
+              HostPort: 9091
+            - ContainerPort: 26656
+              HostPort: 26656
+            - ContainerPort: 26657
+              HostPort: 26657
+          MountPoints:
+            - SourceVolume: lava-data
+              ContainerPath: /lava
+              ReadOnly: false
+          HealthCheck:
+            Command:
+              - CMD
+              - lavad
+              - status
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: lava-node
+              
+        - Name: lava-provider
+          Image: !Sub ghcr.io/lavanet/lava/lavap:${LavapVersion}
+          Essential: true
+          DependsOn:
+            - ContainerName: lava-node
+              Condition: HEALTHY
+          Command:
+            - rpcprovider
+            - provider.yml
+            - --chain-id
+            - lava
+            - --from
+            - servicer1
+            - --log_level
+            - debug
+            - --geolocation
+            - "2"
+            - --keyring-backend
+            - test
+            - --shard-id
+            - "1"
+            - --node
+            - tcp://localhost:26657
+          MountPoints:
+            - SourceVolume: lava-data
+              ContainerPath: /lava
+              ReadOnly: false
+            - SourceVolume: lava-config
+              ContainerPath: /lava/config/provider.yml
+              ReadOnly: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: lava-provider
+      
+      Volumes:
+        - Name: lava-data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystem
+            RootDirectory: /lava-data
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref DataAccessPoint
+        - Name: lava-config
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystem
+            RootDirectory: /lava-config
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref ConfigAccessPoint
+
+  # ECS Service
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: MountTargetResource
+    Properties:
+      ServiceName: LavaNodeService
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets: !Ref SubnetIds
+
+Outputs:
+  ClusterName:
+    Description: Name of the ECS cluster
+    Value: !Ref Cluster
+    
+  ServiceName:
+    Description: Name of the ECS service
+    Value: !Ref Service
+    
+  TaskDefinition:
+    Description: Task definition for the Lava Node
+    Value: !Ref TaskDefinition
+    
+  FileSystemId:
+    Description: ID of the EFS file system
+    Value: !Ref FileSystem

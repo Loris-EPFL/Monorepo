@@ -1,0 +1,181 @@
+{
+    "family": "lava-node",
+    "executionRoleArn": "${ECSTaskExecutionRoleARN}",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "2048",
+    "memory": "4096",
+    "containerDefinitions": [
+      {
+        "name": "lava-node-init",
+        "image": "ghcr.io/lavanet/lava/lavad:${LAVAD_VERSION}",
+        "essential": false,
+        "environment": [
+          {"name": "CHAIN_ID", "value": "${CHAIN_ID}"},
+          {"name": "KEYRING_BACKEND", "value": "${KEYRING_BACKEND}"},
+          {"name": "MONIKER", "value": "${MONIKER}"}
+        ],
+        "command": [
+          "sh", "-c", "lavad config chain-id $CHAIN_ID && lavad config keyring-backend $KEYRING_BACKEND && lavad init $MONIKER --chain-id $CHAIN_ID"
+        ],
+        "mountPoints": [
+          {
+            "sourceVolume": "lava-data",
+            "containerPath": "/lava",
+            "readOnly": false
+          }
+        ],
+        "logConfiguration": {
+          "logDriver": "awslogs",
+          "options": {
+            "awslogs-group": "/ecs/lava-node",
+            "awslogs-region": "${AWS_REGION}",
+            "awslogs-stream-prefix": "lava-node-init"
+          }
+        }
+      },
+      {
+        "name": "lava-node-config",
+        "image": "ghcr.io/tomwright/dasel:v2.7.0",
+        "essential": false,
+        "dependsOn": [
+          {
+            "containerName": "lava-node-init",
+            "condition": "SUCCESS"
+          }
+        ],
+        "environment": [
+          {"name": "STATE_SYNC_RPC_1", "value": "${STATE_SYNC_RPC_1}"},
+          {"name": "GENESIS_ADDRESS", "value": "${GENESIS_ADDRESS}"},
+          {"name": "ADDRBOOK_ADDRESS", "value": "${ADDRBOOK_ADDRESS}"},
+          {"name": "NUM_BLOCKS", "value": "${NUM_BLOCKS}"}
+        ],
+        "command": [
+          "sh", "-c", 
+          "apt-get -y update && apt-get install -y jq curl && curl -Ls $GENESIS_ADDRESS > /lava/.lava/config/genesis.json && curl -Ls $ADDRBOOK_ADDRESS > /lava/.lava/config/addrbook.json && dasel put -f /lava/.lava/config/app.toml -t string -v 0ulava 'minimum-gas-prices' && dasel put -f /lava/.lava/config/app.toml -t string -v custom 'pruning' && dasel put -f /lava/.lava/config/app.toml -t string -v 100 'pruning-keep-recent' && dasel put -f /lava/.lava/config/app.toml -t string -v 0 'pruning-keep-every' && dasel put -f /lava/.lava/config/app.toml -t string -v 19 'pruning-interval' && dasel put -f /lava/.lava/config/app.toml -t string -v true 'api.enable' && LATEST_HEIGHT=$(curl -s $STATE_SYNC_RPC_1/block | jq -r .result.block.header.height) && SYNC_BLOCK_HEIGHT=$((LATEST_HEIGHT - $NUM_BLOCKS)) && SYNC_BLOCK_HASH=$(curl -s \"$STATE_SYNC_RPC_1/block?height=$SYNC_BLOCK_HEIGHT\" | jq -r .result.block_id.hash) && dasel put -f /lava/.lava/config/config.toml -t string -v true 'statesync.enable' && dasel put -f /lava/.lava/config/config.toml -t string -v \"$STATE_SYNC_RPC_1,$STATE_SYNC_RPC_1\" 'statesync.rpc_servers' && dasel put -f /lava/.lava/config/config.toml -t string -v \"$SYNC_BLOCK_HEIGHT\" 'statesync.trust_height' && dasel put -f /lava/.lava/config/config.toml -t string -v \"$SYNC_BLOCK_HASH\" 'statesync.trust_hash' && dasel put -f /lava/.lava/config/config.toml -t string -v \"tcp://0.0.0.0:26657\" 'rpc.laddr'"
+        ],
+        "mountPoints": [
+          {
+            "sourceVolume": "lava-data",
+            "containerPath": "/lava",
+            "readOnly": false
+          }
+        ],
+        "logConfiguration": {
+          "logDriver": "awslogs",
+          "options": {
+            "awslogs-group": "/ecs/lava-node",
+            "awslogs-region": "${AWS_REGION}",
+            "awslogs-stream-prefix": "lava-node-config"
+          }
+        }
+      },
+      {
+        "name": "lava-node",
+        "image": "ghcr.io/lavanet/lava/lavad:${LAVAD_VERSION}",
+        "essential": true,
+        "dependsOn": [
+          {
+            "containerName": "lava-node-config",
+            "condition": "SUCCESS"
+          }
+        ],
+        "command": ["start"],
+        "portMappings": [
+          {"containerPort": 1317, "hostPort": 1317},
+          {"containerPort": 9090, "hostPort": 9090},
+          {"containerPort": 9091, "hostPort": 9091},
+          {"containerPort": 26656, "hostPort": 26656},
+          {"containerPort": 26657, "hostPort": 26657}
+        ],
+        "mountPoints": [
+          {
+            "sourceVolume": "lava-data",
+            "containerPath": "/lava",
+            "readOnly": false
+          }
+        ],
+        "healthCheck": {
+          "command": ["CMD", "lavad", "status"],
+          "interval": 30,
+          "timeout": 5,
+          "retries": 3,
+          "startPeriod": 60
+        },
+        "logConfiguration": {
+          "logDriver": "awslogs",
+          "options": {
+            "awslogs-group": "/ecs/lava-node",
+            "awslogs-region": "${AWS_REGION}",
+            "awslogs-stream-prefix": "lava-node"
+          }
+        }
+      },
+      {
+        "name": "lava-provider",
+        "image": "ghcr.io/lavanet/lava/lavap:${LAVAP_VERSION}",
+        "essential": true,
+        "dependsOn": [
+          {
+            "containerName": "lava-node",
+            "condition": "HEALTHY"
+          }
+        ],
+        "command": [
+          "rpcprovider",
+          "provider.yml",
+          "--chain-id", "lava",
+          "--from", "servicer1",
+          "--log_level", "debug",
+          "--geolocation", "2",
+          "--keyring-backend", "test",
+          "--shard-id", "1",
+          "--node", "tcp://localhost:26657"
+        ],
+        "mountPoints": [
+          {
+            "sourceVolume": "lava-data",
+            "containerPath": "/lava",
+            "readOnly": false
+          },
+          {
+            "sourceVolume": "lava-config",
+            "containerPath": "/lava/config/provider.yml",
+            "readOnly": true
+          }
+        ],
+        "logConfiguration": {
+          "logDriver": "awslogs",
+          "options": {
+            "awslogs-group": "/ecs/lava-node",
+            "awslogs-region": "${AWS_REGION}",
+            "awslogs-stream-prefix": "lava-provider"
+          }
+        }
+      }
+    ],
+    "volumes": [
+      {
+        "name": "lava-data",
+        "efsVolumeConfiguration": {
+          "fileSystemId": "${EFSFileSystemId}",
+          "rootDirectory": "/lava-data",
+          "transitEncryption": "ENABLED",
+          "authorizationConfig": {
+            "accessPointId": "${DataAccessPointId}"
+          }
+        }
+      },
+      {
+        "name": "lava-config",
+        "efsVolumeConfiguration": {
+          "fileSystemId": "${EFSFileSystemId}",
+          "rootDirectory": "/lava-config",
+          "transitEncryption": "ENABLED",
+          "authorizationConfig": {
+            "accessPointId": "${ConfigAccessPointId}"
+          }
+        }
+      }
+    ]
+  }

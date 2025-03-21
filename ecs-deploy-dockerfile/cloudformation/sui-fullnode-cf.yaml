@@ -1,0 +1,343 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Sui Full Node on ECS with EC2 Launch Type for High Performance'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The VPC where resources will be deployed
+  
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnet IDs where the ECS tasks can run
+  
+  NodeImageVersion:
+    Type: String
+    Default: mainnet-v1.19.1
+    Description: The version of the Sui node Docker image to use
+  
+  DesiredCount:
+    Type: Number
+    Default: 1
+    Description: Number of instances of the task to run
+    
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Key pair for SSH access to EC2 instances
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-0fe77b349d804e9e6
+    us-east-2:
+      AMI: ami-05803413c51f242b7
+    us-west-1:
+      AMI: ami-0a1a9741b091af0f8
+    us-west-2:
+      AMI: ami-095413544ce52f4d0
+    eu-west-1:
+      AMI: ami-0e1ab783dc9489f34
+
+Resources:
+  # EFS File System with High Performance Configuration
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: provisioned
+      ProvisionedThroughputInMibps: 256
+      BackupPolicy:
+        Status: ENABLED
+  
+  # Mount Target for EFS in each Subnet
+  MountTargetResource:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Select [0, !Ref SubnetIds]
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+  
+  # Security Group for EFS
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EFS access
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref ECSSecurityGroup
+  
+  # Access Point for Config Files
+  ConfigAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref FileSystem
+      PosixUser:
+        Uid: 1000
+        Gid: 1000
+      RootDirectory:
+        Path: /config
+        CreationInfo:
+          OwnerUid: 1000
+          OwnerGid: 1000
+          Permissions: 755
+  
+  # Access Point for Blockchain Data
+  DataAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref FileSystem
+      PosixUser:
+        Uid: 1000
+        Gid: 1000
+      RootDirectory:
+        Path: /data
+        CreationInfo:
+          OwnerUid: 1000
+          OwnerGid: 1000
+          Permissions: 755
+  
+  # ECS Cluster
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: SuiFullNodeCluster
+      CapacityProviders:
+        - !Ref ECSCapacityProvider
+
+  # EC2 Auto Scaling Group for ECS
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Ref SubnetIds
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: !Ref DesiredCount
+      MaxSize: !Ref DesiredCount
+      DesiredCapacity: !Ref DesiredCount
+      Tags:
+        - Key: Name
+          Value: SuiFullNodeInstance
+          PropagateAtLaunch: true
+  
+  # ECS Capacity Provider
+  ECSCapacityProvider:
+    Type: AWS::ECS::CapacityProvider
+    Properties:
+      AutoScalingGroupProvider:
+        AutoScalingGroupArn: !Ref AutoScalingGroup
+        ManagedScaling:
+          Status: ENABLED
+          TargetCapacity: 100
+        ManagedTerminationProtection: ENABLED
+
+  # Launch Template for EC2 Instances
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: SuiFullNodeLaunchTemplate
+      VersionDescription: Initial version
+      LaunchTemplateData:
+        InstanceType: r6i.4xlarge  # 16 vCPUs, 128GB RAM
+        ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+        KeyName: !Ref KeyName
+        SecurityGroupIds:
+          - !Ref ECSSecurityGroup
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 100  # Root volume
+              VolumeType: gp3
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            echo ECS_CLUSTER=${Cluster} >> /etc/ecs/ecs.config
+            echo ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config
+            yum install -y amazon-efs-utils
+            mkdir -p /mnt/efs/config /mnt/efs/data
+            mount -t efs -o tls ${FileSystem}.efs.${AWS::Region}.amazonaws.com:/ /mnt/efs
+  
+  # Log Group
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/sui-fullnode
+      RetentionInDays: 14
+  
+  # ECS Task Execution Role
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+  
+  # ECS Instance Role
+  ECSInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  # Instance Profile
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ECSInstanceRole
+  
+  # Security Group for ECS
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Sui Full Node on ECS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: udp
+          FromPort: 8084
+          ToPort: 8084
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 9000
+          ToPort: 9000
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 9184
+          ToPort: 9184
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0  # Consider restricting this in production
+  
+  # Task Definition
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: sui-fullnode
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - EC2
+      Cpu: '16384'      # 16 vCPUs
+      Memory: '120000'  # 120GB
+      ContainerDefinitions:
+        - Name: sui-fullnode
+          Image: !Sub mysten/sui-node:${NodeImageVersion}
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              HostPort: 8080
+            - ContainerPort: 8084
+              HostPort: 8084
+              Protocol: udp
+            - ContainerPort: 9000
+              HostPort: 9000
+            - ContainerPort: 9184
+              HostPort: 9184
+          MountPoints:
+            - SourceVolume: sui-config
+              ContainerPath: /opt/sui/config
+              ReadOnly: true
+            - SourceVolume: sui-data
+              ContainerPath: /opt/sui/db
+              ReadOnly: false
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: sui-fullnode
+          Command:
+            - /opt/sui/bin/sui-node
+            - --config-path
+            - /opt/sui/config/fullnode.yaml
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - curl -f http://localhost:9184/health || exit 1
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+      Volumes:
+        - Name: sui-config
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystem
+            RootDirectory: /config
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref ConfigAccessPoint
+        - Name: sui-data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystem
+            RootDirectory: /data
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref DataAccessPoint
+  
+  # ECS Service
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: MountTargetResource
+    Properties:
+      ServiceName: SuiFullNodeService
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: EC2  # Changed from FARGATE to EC2
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets: !Ref SubnetIds
+
+Outputs:
+  ClusterName:
+    Description: Name of the ECS cluster
+    Value: !Ref Cluster
+  
+  ServiceName:
+    Description: Name of the ECS service
+    Value: !Ref Service
+  
+  TaskDefinition:
+    Description: Task definition for the Sui Full Node
+    Value: !Ref TaskDefinition
+  
+  FileSystemId:
+    Description: ID of the EFS file system
+    Value: !Ref FileSystem
+  
+  ConfigAccessPointId:
+    Description: ID of the EFS access point for configuration
+    Value: !Ref ConfigAccessPoint
+  
+  DataAccessPointId:
+    Description: ID of the EFS access point for blockchain data
+    Value: !Ref DataAccessPoint
+  
+  InstanceId:
+    Description: ID of the EC2 instance running the Sui Full Node
+    Value: !Ref AutoScalingGroup
