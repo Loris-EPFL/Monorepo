@@ -16,7 +16,9 @@
           {"name": "MONIKER", "value": "${MONIKER}"}
         ],
         "command": [
-          "sh", "-c", "lavad config chain-id $CHAIN_ID && lavad config keyring-backend $KEYRING_BACKEND && lavad init $MONIKER --chain-id $CHAIN_ID"
+          "/bin/bash", 
+          "-c", 
+          "mkdir -p /lava/.lava && lavad config chain-id $CHAIN_ID && lavad config keyring-backend $KEYRING_BACKEND && lavad init $MONIKER --chain-id $CHAIN_ID"
         ],
         "mountPoints": [
           {

@@ -84,7 +84,8 @@ Resources:
         - IpProtocol: tcp
           FromPort: 2049
           ToPort: 2049
-          CidrIp: 10.0.0.0/16  # Should match your VPC CIDR
+          CidrIp: 0.0.0.0/0  # Allow from anywhere (you can restrict this later)
+
   
   # Access Point for Data
   DataAccessPoint:
@@ -185,8 +186,8 @@ Resources:
             - Name: MONIKER
               Value: !Ref Moniker
           Command:
-            - sh
-            - -c
+            - "/bin/sh"
+            - "-c"
             - "lavad config chain-id $CHAIN_ID && lavad config keyring-backend $KEYRING_BACKEND && lavad init $MONIKER --chain-id $CHAIN_ID"
           MountPoints:
             - SourceVolume: lava-data
@@ -215,9 +216,9 @@ Resources:
             - Name: NUM_BLOCKS
               Value: !Ref NumBlocks
           Command:
-            - sh
-            - -c
-            - "apt-get -y update && apt-get install -y jq curl && curl -Ls $GENESIS_ADDRESS > /lava/.lava/config/genesis.json && curl -Ls $ADDRBOOK_ADDRESS > /lava/.lava/config/addrbook.json && dasel put -f /lava/.lava/config/app.toml -t string -v 0ulava 'minimum-gas-prices' && dasel put -f /lava/.lava/config/app.toml -t string -v custom 'pruning' && dasel put -f /lava/.lava/config/app.toml -t string -v 100 'pruning-keep-recent' && dasel put -f /lava/.lava/config/app.toml -t string -v 0 'pruning-keep-every' && dasel put -f /lava/.lava/config/app.toml -t string -v 19 'pruning-interval' && dasel put -f /lava/.lava/config/app.toml -t string -v true 'api.enable' && LATEST_HEIGHT=$(curl -s $STATE_SYNC_RPC_1/block | jq -r .result.block.header.height) && SYNC_BLOCK_HEIGHT=$((LATEST_HEIGHT - $NUM_BLOCKS)) && SYNC_BLOCK_HASH=$(curl -s \"$STATE_SYNC_RPC_1/block?height=$SYNC_BLOCK_HEIGHT\" | jq -r .result.block_id.hash) && dasel put -f /lava/.lava/config/config.toml -t string -v true 'statesync.enable' && dasel put -f /lava/.lava/config/config.toml -t string -v \"$STATE_SYNC_RPC_1,$STATE_SYNC_RPC_1\" 'statesync.rpc_servers' && dasel put -f /lava/.lava/config/config.toml -t string -v \"$SYNC_BLOCK_HEIGHT\" 'statesync.trust_height' && dasel put -f /lava/.lava/config/config.toml -t string -v \"$SYNC_BLOCK_HASH\" 'statesync.trust_hash' && dasel put -f /lava/.lava/config/config.toml -t string -v \"tcp://0.0.0.0:26657\" 'rpc.laddr'"
+            - "/bin/sh"
+            - "-c"
+            - "apt-get -y update && apt-get install -y jq curl && curl -Ls $GENESIS_ADDRESS > /lava/.lava/config/genesis.json && curl -Ls $ADDRBOOK_ADDRESS > /lava/.lava/config/addrbook.json && dasel put -f /lava/.lava/config/app.toml -t string -v 0ulava 'minimum-gas-prices' && dasel put -f /lava/.lava/config/app.toml -t string -v custom 'pruning' && dasel put -f /lava/.lava/config/app.toml -t string -v 100 'pruning-keep-recent' && dasel put -f /lava/.lava/config/app.toml -t string -v 0 'pruning-keep-every' && dasel put -f /lava/.lava/config/app.toml -t string -v 19 'pruning-interval' && dasel put -f /lava/.lava/config/app.toml -t string -v true 'api.enable' && LATEST_HEIGHT=$(curl -s $STATE_SYNC_RPC_1/block | jq -r .result.block.header.height) && SYNC_BLOCK_HEIGHT=$((LATEST_HEIGHT - $NUM_BLOCKS)) && SYNC_BLOCK_HASH=$(curl -s \"$STATE_SYNC_RPC_1/block?height=$SYNC_BLOCK_HEIGHT\" | jq -r .result.block_id.hash) && dasel put -f /lava/.lava/config/config.toml -t string -v true 'statesync.enable' && dasel put -f /lava/.lava/config/config.toml -t string -v \"$STATE_SYNC_RPC_1,$STATE_SYNC_RPC_1\" 'statesync.rpc_servers' && dasel put -f /lava/.lava/config/config.toml -t string -v \"$SYNC_BLOCK_HEIGHT\" 'statesync.trust_height' && dasel put -f /lava/.lava/config/config.toml -t string -v \"$SYNC_BLOCK_HASH\" 'statesync.trust_hash' && dasel put -f /lava/.lava/config/config.toml -t string -v \"tcp://0.0.0.0:26657\" 'rpc.laddr' && mkdir -p /lava/config && echo 'endpoints: [{chain_id: \"lava\", url: \"http://localhost:26657\"}]' > /lava/config/provider.yml"
           MountPoints:
             - SourceVolume: lava-data
               ContainerPath: /lava
@@ -276,7 +277,7 @@ Resources:
               Condition: HEALTHY
           Command:
             - rpcprovider
-            - provider.yml
+            - /lava/config/provider.yml
             - --chain-id
             - lava
             - --from
@@ -295,9 +296,6 @@ Resources:
             - SourceVolume: lava-data
               ContainerPath: /lava
               ReadOnly: false
-            - SourceVolume: lava-config
-              ContainerPath: /lava/config/provider.yml
-              ReadOnly: true
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -309,14 +307,12 @@ Resources:
         - Name: lava-data
           EFSVolumeConfiguration:
             FilesystemId: !Ref FileSystem
-            RootDirectory: /lava-data
             TransitEncryption: ENABLED
             AuthorizationConfig:
               AccessPointId: !Ref DataAccessPoint
         - Name: lava-config
           EFSVolumeConfiguration:
             FilesystemId: !Ref FileSystem
-            RootDirectory: /lava-config
             TransitEncryption: ENABLED
             AuthorizationConfig:
               AccessPointId: !Ref ConfigAccessPoint
