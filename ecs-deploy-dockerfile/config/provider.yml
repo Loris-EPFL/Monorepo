@@ -1,7 +1,19 @@
 endpoints:
-    - api-interface: jsonrpc
-      chain-id: SUIJSONRPC
-      network-address:
-        address: "127.0.0.1:2220"
-      node-urls: 
-        - url: https://sui-mainnet-endpoint.blockvision.org
+  - api-interface: rest
+    chain-id: LAV1
+    network-address:
+      address: "0.0.0.0:1317"
+    node-urls:
+      - url: http://localhost:1317
+  - api-interface: grpc
+    chain-id: LAV1
+    network-address:
+      address: "0.0.0.0:9090"
+    node-urls:
+      - url: http://localhost:9090
+  - api-interface: tendermint
+    chain-id: LAV1
+    network-address:
+      address: "0.0.0.0:26657"
+    node-urls:
+      - url: http://localhost:26657

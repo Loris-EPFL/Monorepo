@@ -1,0 +1,255 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Lava Node on ECS - Simplified'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The VPC where resources will be deployed
+  
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnet IDs where the ECS tasks can run
+  
+  LavadVersion:
+    Type: String
+    Default: latest
+    Description: Version of the Lavad Docker image
+  
+  ChainId:
+    Type: String
+    Default: lava-testnet-2
+    Description: Chain ID for the Lava node
+  
+  KeyringBackend:
+    Type: String
+    Default: test
+    Description: Keyring backend for the Lava node
+  
+  Moniker:
+    Type: String
+    Default: ECS_LAVA_NODE
+    Description: Moniker for the Lava node
+
+Resources:
+  # EFS File System for Data
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      BackupPolicy:
+        Status: ENABLED
+  
+  # Security Group for EFS
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EFS access
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          CidrIp: 0.0.0.0/0  # Allow from anywhere for testing
+  
+  # Mount Target for EFS in each Subnet
+  MountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Select [0, !Ref SubnetIds]
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+  
+  # Access Point for Data
+  DataAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref FileSystem
+      PosixUser:
+        Uid: 1000
+        Gid: 1000
+      RootDirectory:
+        Path: /lava-data
+        CreationInfo:
+          OwnerUid: 1000
+          OwnerGid: 1000
+          Permissions: 755
+  
+  # ECS Cluster
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: LavaNodeCluster
+  
+  # Log Group
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/lava-node
+      RetentionInDays: 30
+  
+  # ECS Role
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+  
+  # Security Group for ECS
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Lava Node on ECS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 1317
+          ToPort: 1317
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 9090
+          ToPort: 9091
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 26656
+          ToPort: 26657
+          CidrIp: 0.0.0.0/0
+  
+  # Task Definition - Using entrypoint instead of command
+  # Previous resources remain the same until TaskDefinition
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    DependsOn: MountTarget
+    Properties:
+      Family: lava-node-simple
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 2048
+      Memory: 4096
+      ContainerDefinitions:
+        - Name: lava-node-init
+          Image: !Sub ghcr.io/lavanet/lava/lavad:${LavadVersion}
+          Essential: false
+          Environment:
+            - Name: CHAIN_ID
+              Value: !Ref ChainId
+            - Name: KEYRING_BACKEND
+              Value: !Ref KeyringBackend
+            - Name: MONIKER
+              Value: !Ref Moniker
+          Command:
+            - sh
+            - -c
+            - lavad config chain-id $CHAIN_ID && lavad config keyring-backend $KEYRING_BACKEND && lavad init $MONIKER --chain-id $CHAIN_ID
+          MountPoints:
+            - SourceVolume: lava-data
+              ContainerPath: /lava
+              ReadOnly: false
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: lava-node-init
+
+        - Name: lava-node
+          Image: !Sub ghcr.io/lavanet/lava/lavad:${LavadVersion}
+          Essential: true
+          DependsOn:
+            - ContainerName: lava-node-init
+              Condition: SUCCESS
+          Command:
+            - start
+          PortMappings:
+            - ContainerPort: 1317
+              HostPort: 1317
+            - ContainerPort: 9090
+              HostPort: 9090
+            - ContainerPort: 9091
+              HostPort: 9091
+            - ContainerPort: 26656
+              HostPort: 26656
+            - ContainerPort: 26657
+              HostPort: 26657
+          MountPoints:
+            - SourceVolume: lava-data
+              ContainerPath: /lava
+              ReadOnly: false
+          HealthCheck:
+            Command:
+              - CMD
+              - lavad
+              - status
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: lava-node
+      
+      Volumes:
+        - Name: lava-data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystem
+            RootDirectory: /
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref DataAccessPoint
+
+# Rest of the template remains the same
+
+
+  # ECS Service
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: MountTarget
+    Properties:
+      ServiceName: LavaNodeService
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets: !Ref SubnetIds
+
+Outputs:
+  ClusterName:
+    Description: Name of the ECS cluster
+    Value: !Ref Cluster
+    
+  ServiceName:
+    Description: Name of the ECS service
+    Value: !Ref Service
+    
+  TaskDefinition:
+    Description: Task definition for the Lava Node
+    Value: !Ref TaskDefinition
+    
+  FileSystemId:
+    Description: ID of the EFS file system
+    Value: !Ref FileSystem
+    
+  EFSSecurityGroupId:
+    Description: ID of the EFS security group
+    Value: !Ref EFSSecurityGroup
+    
+  ECSSecurityGroupId:
+    Description: ID of the ECS security group
+    Value: !Ref ECSSecurityGroup
