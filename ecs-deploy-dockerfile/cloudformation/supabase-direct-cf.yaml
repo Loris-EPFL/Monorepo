@@ -1,0 +1,187 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Supabase on AWS with direct EC2 instance (no Auto Scaling)'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The VPC where resources will be deployed
+  
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet ID where the EC2 instance will be launched
+  
+  PostgresPassword:
+    Type: String
+    Description: Master password for PostgreSQL
+    NoEcho: true
+  
+  JwtSecret:
+    Type: String
+    Description: Secret for JWT tokens
+    NoEcho: true
+  
+  KeyPair:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Key pair for EC2 instance
+    
+  InstanceType:
+    Type: String
+    Description: Instance type for the database host
+    Default: "t3.xlarge"
+    AllowedValues:
+      - t3.large
+      - t3.xlarge
+      - m5.large
+      - m5.xlarge
+      - r5.large
+      - r5.xlarge
+
+Resources:
+  # EFS for Persistent Storage
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      FileSystemTags:
+        - Key: Name
+          Value: SupabaseEFS
+
+  # Security Group for EFS
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EFS access
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          CidrIp: 10.0.0.0/16  # Adjust this to your VPC CIDR
+
+  # Security Group for EC2 Instance
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Supabase EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0    # SSH access
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 0.0.0.0/0    # PostgreSQL
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: 0.0.0.0/0    # Supabase Studio
+        - IpProtocol: tcp
+          FromPort: 9000
+          ToPort: 9000
+          CidrIp: 0.0.0.0/0    # REST API
+        - IpProtocol: tcp
+          FromPort: 5433
+          ToPort: 5433
+          CidrIp: 0.0.0.0/0    # Pooler
+
+  # Mount Target for EFS
+  MountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref SubnetId
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  # EC2 Instance for Supabase
+  SupabaseInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: MountTarget
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: ami-0d0b75c8c47ed0edf  # Amazon Linux 2 in eu-north-1
+      KeyName: !Ref KeyPair
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+        - !Ref EFSSecurityGroup
+      SubnetId: !Ref SubnetId
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 100
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Install Docker and Docker Compose
+          yum update -y
+          yum install -y docker git amazon-efs-utils
+          systemctl enable docker
+          systemctl start docker
+          curl -L "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+          
+          # Mount EFS
+          mkdir -p /mnt/efs
+          mount -t efs -o tls ${FileSystem}.efs.${AWS::Region}.amazonaws.com:/ /mnt/efs
+          
+          # Add mount to fstab for persistence
+          echo "${FileSystem}.efs.${AWS::Region}.amazonaws.com:/ /mnt/efs efs tls,_netdev 0 0" >> /etc/fstab
+          
+          # Create directories for data
+          mkdir -p /mnt/efs/postgres-data
+          
+          # Clone Supabase Docker setup
+          cd /home/ec2-user
+          git clone https://github.com/supabase/supabase.git
+          cd supabase/docker
+          
+          # Configure Supabase
+          cp .env.example .env
+          
+          # Update environment variables
+          sed -i 's/POSTGRES_PASSWORD=your-super-secret-and-long-postgres-password/POSTGRES_PASSWORD=${PostgresPassword}/g' .env
+          sed -i 's/JWT_SECRET=your-super-secret-jwt-token-with-at-least-32-characters-long/JWT_SECRET=${JwtSecret}/g' .env
+          
+          # Update volume paths to use EFS
+          sed -i 's|./volumes/db/data:/var/lib/postgresql/data|/mnt/efs/postgres-data:/var/lib/postgresql/data|g' docker-compose.yml
+          
+          # Start Supabase
+          docker-compose up -d
+          
+          # Set up a simple health check script
+          cat > /home/ec2-user/health-check.sh << 'EOF'
+          #!/bin/bash
+          if ! docker ps | grep -q supabase-db; then
+            docker-compose -f /home/ec2-user/supabase/docker/docker-compose.yml up -d
+          fi
+          EOF
+          
+          chmod +x /home/ec2-user/health-check.sh
+          
+          # Add cron job to run health check every 5 minutes
+          (crontab -l 2>/dev/null; echo "*/5 * * * * /home/ec2-user/health-check.sh") | crontab -
+      Tags:
+        - Key: Name
+          Value: SupabaseInstance
+
+Outputs:
+  SupabaseInstanceId:
+    Description: ID of the EC2 instance
+    Value: !Ref SupabaseInstance
+    
+  SupabasePublicIP:
+    Description: Public IP of the EC2 instance
+    Value: !GetAtt SupabaseInstance.PublicIp
+    
+  SupabaseStudioUrl:
+    Description: URL for Supabase Studio
+    Value: !Sub http://${SupabaseInstance.PublicIp}:8000
+    
+  FileSystemId:
+    Description: ID of the EFS file system
+    Value: !Ref FileSystem

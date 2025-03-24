@@ -19,63 +19,11 @@ Parameters:
     Type: String
     Description: Secret for JWT tokens
     NoEcho: true
-
-  JwtExpiry:
-    Type: String
-    Description: JWT expiry in seconds
-    Default: "3600"
   
-  SiteUrl:
-    Type: String
-    Description: Public URL for the site
-    Default: "http://localhost:3000"
-  
-  AnonKey:
-    Type: String
-    Description: Anon key for Supabase
-    Default: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-    NoEcho: true
-  
-  ServiceRoleKey:
-    Type: String
-    Description: Service role key for Supabase
-    Default: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-    NoEcho: true
-  
-  DashboardUsername:
-    Type: String
-    Description: Username for Supabase dashboard
-    Default: "supabase"
-  
-  DashboardPassword:
-    Type: String
-    Description: Password for Supabase dashboard
-    NoEcho: true
-    
   KeyPair:
     Type: AWS::EC2::KeyPair::KeyName
     Description: Key pair for EC2 instances
     
-  EnableEmailSignup:
-    Type: String
-    Description: Enable email signup
-    Default: "true"
-    
-  EnableAnonymousUsers:
-    Type: String
-    Description: Enable anonymous users
-    Default: "true"
-    
-  EnableEmailAutoconfirm:
-    Type: String
-    Description: Enable email auto-confirmation
-    Default: "true"
-    
-  TenantId:
-    Type: String
-    Description: Tenant ID for Supavisor
-    Default: "default-tenant"
-
   InstanceType:
     Type: String
     Description: Instance type for the database host
@@ -87,6 +35,11 @@ Parameters:
       - m5.xlarge
       - r5.large
       - r5.xlarge
+  
+  ResourcePrefix:
+    Type: String
+    Default: "supabase-new"
+    Description: Prefix for resource names to ensure uniqueness
 
 Mappings:
   RegionMap:
@@ -100,73 +53,15 @@ Mappings:
       AMI: ami-095413544ce52f4d0
     eu-west-1:
       AMI: ami-0e1ab783dc9489f34
+    eu-north-1:
+      AMI: ami-0d0b75c8c47ed0edf
 
 Resources:
   # ECS Cluster
   Cluster:
     Type: AWS::ECS::Cluster
     Properties:
-      ClusterName: SupabaseCluster
-      CapacityProviders:
-        - FARGATE
-        - !Ref DBCapacityProvider
-      DefaultCapacityProviderStrategy:
-        - CapacityProvider: FARGATE
-          Weight: 1
-          Base: 1
-  
-  # ECS Capacity Provider for Database EC2 Instances
-  DBCapacityProvider:
-    Type: AWS::ECS::CapacityProvider
-    Properties:
-      AutoScalingGroupProvider:
-        AutoScalingGroupArn: !Ref DBAutoScalingGroup
-        ManagedScaling:
-          Status: ENABLED
-          TargetCapacity: 100
-        ManagedTerminationProtection: ENABLED
-  
-  # Auto Scaling Group for Database
-  DBAutoScalingGroup:
-    Type: AWS::AutoScaling::AutoScalingGroup
-    Properties:
-      VPCZoneIdentifier: !Ref SubnetIds
-      LaunchTemplate:
-        LaunchTemplateId: !Ref DBLaunchTemplate
-        Version: !GetAtt DBLaunchTemplate.LatestVersionNumber
-      MinSize: 1
-      MaxSize: 1
-      DesiredCapacity: 1
-      Tags:
-        - Key: Name
-          Value: SupabaseDatabaseInstance
-          PropagateAtLaunch: true
-  
-  # Launch Template for Database EC2 Instances
-  DBLaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
-    Properties:
-      LaunchTemplateName: SupabaseDatabaseLaunchTemplate
-      VersionDescription: Initial version
-      LaunchTemplateData:
-        InstanceType: !Ref InstanceType
-        ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
-        KeyName: !Ref KeyPair
-        SecurityGroupIds:
-          - !Ref ECSSecurityGroup
-        BlockDeviceMappings:
-          - DeviceName: /dev/xvda
-            Ebs:
-              VolumeSize: 100
-              VolumeType: gp3
-        UserData:
-          Fn::Base64: !Sub |
-            #!/bin/bash
-            echo ECS_CLUSTER=${Cluster} >> /etc/ecs/ecs.config
-            echo ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config
-            yum install -y amazon-efs-utils
-            mkdir -p /mnt/efs
-            mount -t efs -o tls ${FileSystem}.efs.${AWS::Region}.amazonaws.com:/ /mnt/efs
+      ClusterName: !Sub "Supabase-${ResourcePrefix}-Cluster"
   
   # EFS for Persistent Storage
   FileSystem:
@@ -177,3 +72,217 @@ Resources:
       ThroughputMode: bursting
       FileSystemTags:
         - Key: Name
+          Value: !Sub "${ResourcePrefix}-EFS"
+
+  # Security Group for EFS
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EFS access
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          CidrIp: 10.0.0.0/16  # Adjust this to your VPC CIDR
+
+  # Security Group for EC2 Instance
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0    # SSH access
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 0.0.0.0/0    # PostgreSQL
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: 0.0.0.0/0    # Supabase Studio
+        - IpProtocol: tcp
+          FromPort: 9000
+          ToPort: 9000
+          CidrIp: 0.0.0.0/0    # REST API
+        - IpProtocol: tcp
+          FromPort: 5433
+          ToPort: 5433
+          CidrIp: 0.0.0.0/0    # Pooler
+
+  # Mount Target for EFS
+  MountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Select [0, !Ref SubnetIds]
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  # EC2 Instance for ECS
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    DependsOn: MountTarget
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+      KeyName: !Ref KeyPair
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+        - !Ref EFSSecurityGroup
+      SubnetId: !Select [0, !Ref SubnetIds]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 100
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Install ECS agent and configure
+          echo ECS_CLUSTER=${Cluster} >> /etc/ecs/ecs.config
+          echo ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config
+          
+          # Install EFS utilities
+          yum install -y amazon-efs-utils
+          
+          # Mount EFS
+          mkdir -p /mnt/efs
+          mount -t efs -o tls ${FileSystem}.efs.${AWS::Region}.amazonaws.com:/ /mnt/efs
+          
+          # Create directories for data
+          mkdir -p /mnt/efs/postgres-data
+          mkdir -p /mnt/efs/sui-fullnode-data
+          
+          # Add mount to fstab for persistence
+          echo "${FileSystem}.efs.${AWS::Region}.amazonaws.com:/ /mnt/efs efs tls,_netdev 0 0" >> /etc/fstab
+          
+          # Start ECS agent
+          systemctl enable --now ecs
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-Instance"
+
+  # ECS Task Execution Role
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  # ECS Task Role
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  # Task Definition for Supabase
+  SupabaseTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ResourcePrefix}-supabase"
+      NetworkMode: bridge
+      RequiresCompatibilities:
+        - EC2
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: supabase-db
+          Image: supabase/postgres:15.1.0.73
+          Essential: true
+          Memory: 4096
+          MemoryReservation: 2048
+          Environment:
+            - Name: POSTGRES_PASSWORD
+              Value: !Ref PostgresPassword
+          MountPoints:
+            - SourceVolume: postgres-data
+              ContainerPath: /var/lib/postgresql/data
+          PortMappings:
+            - ContainerPort: 5432
+              HostPort: 5432
+        - Name: supabase-studio
+          Image: supabase/studio:latest
+          Essential: true
+          Memory: 2048
+          MemoryReservation: 1024
+          Environment:
+            - Name: SUPABASE_URL
+              Value: http://localhost:8000
+            - Name: STUDIO_PG_META_URL
+              Value: http://localhost:8000/pg
+            - Name: SUPABASE_ANON_KEY
+              Value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+            - Name: SUPABASE_SERVICE_KEY
+              Value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+          PortMappings:
+            - ContainerPort: 3000
+              HostPort: 8000
+        - Name: supabase-rest
+          Image: postgrest/postgrest:v10.1.2
+          Essential: true
+          Memory: 1024
+          MemoryReservation: 512
+          Environment:
+            - Name: PGRST_DB_URI
+              Value: !Sub postgres://postgres:${PostgresPassword}@localhost:5432/postgres
+            - Name: PGRST_JWT_SECRET
+              Value: !Ref JwtSecret
+          PortMappings:
+            - ContainerPort: 3000
+              HostPort: 9000
+      Volumes:
+        - Name: postgres-data
+          Host:
+            SourcePath: /mnt/efs/postgres-data
+
+  # ECS Service for Supabase
+  SupabaseService:
+    Type: AWS::ECS::Service
+    DependsOn: EC2Instance
+    Properties:
+      ServiceName: !Sub "${ResourcePrefix}-Service"
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref SupabaseTaskDefinition
+      DesiredCount: 1
+      LaunchType: EC2
+
+Outputs:
+  ClusterName:
+    Description: Name of the ECS cluster
+    Value: !Ref Cluster
+    
+  ServiceName:
+    Description: Name of the ECS service
+    Value: !Ref SupabaseService
+    
+  FileSystemId:
+    Description: ID of the EFS file system
+    Value: !Ref FileSystem
+    
+  EC2InstanceId:
+    Description: ID of the EC2 instance
+    Value: !Ref EC2Instance
+    
+  EC2PublicIP:
+    Description: Public IP of the EC2 instance
+    Value: !GetAtt EC2Instance.PublicIp
+    
+  SupabaseStudioUrl:
+    Description: URL for Supabase Studio
+    Value: !Sub http://${EC2Instance.PublicIp}:8000
