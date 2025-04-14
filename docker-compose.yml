@@ -1,33 +1,17 @@
-# MasterProject/docker-compose.yml
 name: master-project
 
+volumes:
+  checkpoints_data:
+
 include:
-  # - path: ./lava/docker/state-sync/docker-compose.yml
-  #   project_directory: ./lava/docker/state-sync
-  #   name: lava
-  #   # Override volumes for lava-node service
-  #   services:
-  #     lava-node:
-  #       volumes:
-  #         - lava_data:/lava  # Keep original volume
-  #         - ${PWD}/lava/config.yml:/lava/.lava/config/config.yml  # Mount config file from project root
-          
   - path: ./sui-sender-indexer/docker-compose.yml
     project_directory: ./sui-sender-indexer
     name: sui
-    # Add dependency for the SUI indexer service
-    services:
-      sui-sender-indexer:
-        depends_on:
-          supabase-db:
-            condition: service_healthy
-        # healthcheck:
-        #   test: ["CMD", "pg_isready", "-h", "supabase-db", "-U", "supabase_admin"]
-        #   interval: 5s
-        #   timeout: 5s
-        #   retries: 20
-        #   start_period: 10s
-            
+    
   - path: ./supabase/docker/docker-compose.yml
     project_directory: ./supabase/docker
     name: supabase
+    
+  - path: ./full-node/docker-compose.yml
+    project_directory: ./full-node
+    name: full-node
