@@ -15,3 +15,7 @@ include:
   - path: ./full-node/docker-compose.yml
     project_directory: ./full-node
     name: full-node
+
+  - path: ./lava/docker/simple-provider/docker-compose.yml
+    project_directory: ./lava/docker/simple-provider
+    name: lava
