@@ -4,9 +4,21 @@ volumes:
   checkpoints_data:
 
 include:
-  - path: ./sui-sender-indexer/docker-compose.yml
-    project_directory: ./sui-sender-indexer
+  # - path: ./sui-sender-indexer/docker-compose.yml
+  #   project_directory: ./sui-sender-indexer
+  #   name: sui
+
+  - path: ./sui_indexer_checkpointTx/docker-compose.yml
+    project_directory: ./sui_indexer_checkpointTx
     name: sui
+    
+  # - path: ./indexer-jsonrpc-test/docker-compose.yml
+  #   project_directory: ./indexer-jsonrpc-test
+  #   name: sui
+
+  # - path: ./sui/docker/sui-indexer-alt/docker-compose.yml
+  #   project_directory: ./sui-indexer-alt
+  #   name: sui-indexer
     
   - path: ./supabase/docker/docker-compose.yml
     project_directory: ./supabase/docker

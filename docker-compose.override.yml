@@ -1,4 +1,4 @@
-# compose.override.yaml
+# # compose.override.yaml
 services:
   indexer:
     volumes:
@@ -12,6 +12,9 @@ services:
       - START_CHECKPOINT=${START_CHECKPOINT}
       - LOCAL_MODE=${LOCAL_MODE}
       - CHECKPOINT_DIR=${CHECKPOINT_DIR}
+    depends_on:
+      db:
+        condition: service_healthy
 
   sui-node:
     volumes:
@@ -25,5 +28,43 @@ services:
       - lava_network
 
 
+networks:
+  lava_network:
+    name: lava_network
+    driver: bridge
+
+
 volumes:
   checkpoints_data:
+
+# compose.override.yaml
+# services:
+#   sui-indexer-alt:
+#     networks:
+#       - supabase_network
+#       - lava_network
+#     # depends_on:
+#     #   - sui-node
+#     restart: unless-stopped
+#     ports:
+#       - "8082:8080"  # Expose indexer API port
+
+#   sui-node:
+#     volumes:
+#       - checkpoints_data:/checkpoints_indexer:rw
+#     ports:
+#       - "8081:8080"
+#       - "9085:8084/udp"
+#       - "9091:9000"
+#       - "9195:9184"
+#     networks:
+#       - lava_network
+#       - supabase_network  # Add this to allow communication with Supabase
+
+# networks:
+#   supabase_network:
+#   lava_network:
+
+
+# volumes:
+#   checkpoints_data:
