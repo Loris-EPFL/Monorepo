@@ -17,6 +17,14 @@
 [submodule "sui-indexer-minimal"]
 	path = sui-indexer-minimal
 	url = git@github.com:Project-Magma-Monorepo/sui-indexer-minimal.git
+	branch = main
 [submodule "sui-indexer-full"]
 	path = sui-indexer-full
 	url = git@github.com:Project-Magma-Monorepo/sui-indexer-full.git
+	branch = main
+[submodule "sui"]
+	path = sui
+	url = git@github.com:Project-Magma-Monorepo/sui.git
+[submodule "sui_indexer_checkpointTx"]
+	path = sui_indexer_checkpointTx
+	url = git@github.com:alexandre-mrt/sui_indexer_checkpointTx.git
